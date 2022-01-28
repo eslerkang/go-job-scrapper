@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -19,15 +21,38 @@ type extractedJob struct {
 }
 
 var baseURL string = "https://kr.indeed.com/jobs?q=python&limit=50"
+var jobViewURL string = "https://kr.indeed.com/viewjob?jk="
 
 func main() {
 	totalPages := getPages()
 	jobs := []extractedJob{}
 
 	for i:=0; i<totalPages; i++ {
-		jobs = append(jobs, getPage(i)...)
+		extractedJobs := getPage(i)
+		jobs = append(jobs, extractedJobs...)
 	}
-	fmt.Println(jobs)
+	writeJobs(jobs)
+
+	fmt.Println("Done,", len(jobs))
+}
+
+func writeJobs(jobs []extractedJob) {
+	file, err := os.Create("jobs.csv")
+	checkErr(err)
+
+	w := csv.NewWriter(file)
+	defer w.Flush()
+
+	headers := []string{"ID", "Title", "Location", "Salary", "Description"}
+
+	wErr := w.Write(headers)
+	checkErr(wErr)
+
+	for _, job := range jobs {
+		jobSlice := []string{jobViewURL+job.id, job.title, job.location, job.salary, job.desc}
+		wErr = w.Write(jobSlice)
+		checkErr(wErr)
+	}
 }
 
 func getPage(page int) []extractedJob {
@@ -46,7 +71,8 @@ func getPage(page int) []extractedJob {
 	searchCards := doc.Find(".tapItem")
 
 	searchCards.Each(func(i int, card *goquery.Selection) {
-		jobs = append(jobs, extractJob(card))
+		job := extractJob(card)
+		jobs = append(jobs, job)
 	})
 
 	return jobs
