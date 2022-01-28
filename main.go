@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	ccsv "github.com/tsak/concurrent-csv-writer"
 )
 
 type extractedJob struct {
@@ -27,8 +26,13 @@ func main() {
 	totalPages := getPages()
 	jobs := []extractedJob{}
 
+	c := make(chan []extractedJob)
+
 	for i:=0; i<totalPages; i++ {
-		extractedJobs := getPage(i)
+		go getPage(i, c)
+	}
+	for i:=0; i<totalPages; i++ {
+		extractedJobs := <- c
 		jobs = append(jobs, extractedJobs...)
 	}
 	writeJobs(jobs)
@@ -37,26 +41,38 @@ func main() {
 }
 
 func writeJobs(jobs []extractedJob) {
-	file, err := os.Create("jobs.csv")
+	file, err := ccsv.NewCsvWriter("jobs.csv")
 	checkErr(err)
 
-	w := csv.NewWriter(file)
-	defer w.Flush()
+	c := make(chan bool)
 
-	headers := []string{"ID", "Title", "Location", "Salary", "Description"}
+	defer file.Close()
 
-	wErr := w.Write(headers)
+	headers := []string{"Link", "Title", "Location", "Salary", "Description"}
+
+	wErr := file.Write(headers)
 	checkErr(wErr)
 
 	for _, job := range jobs {
-		jobSlice := []string{jobViewURL+job.id, job.title, job.location, job.salary, job.desc}
-		wErr = w.Write(jobSlice)
-		checkErr(wErr)
+		go writeJobLine(file, job, c)
+	}
+
+	for i:=0; i<len(jobs); i++ {
+		<- c
 	}
 }
 
-func getPage(page int) []extractedJob {
+func writeJobLine(file *ccsv.CsvWriter, job extractedJob, c chan bool) {
+	jobSlice := []string{jobViewURL+job.id, job.title, job.location, job.salary, job.desc}
+	wErr := file.Write(jobSlice)
+	checkErr(wErr)
+	c <- true
+}
+
+func getPage(page int, mainC chan<- []extractedJob) {
 	jobs := []extractedJob{}
+
+	c := make(chan extractedJob)
 
 	pageURL := baseURL + "&start=" + strconv.Itoa(page*50) + "&limit=50"
 	fmt.Println("Requesting: ", pageURL)
@@ -71,20 +87,21 @@ func getPage(page int) []extractedJob {
 	searchCards := doc.Find(".tapItem")
 
 	searchCards.Each(func(i int, card *goquery.Selection) {
-		job := extractJob(card)
-		jobs = append(jobs, job)
+		go extractJob(card, c)
 	})
-
-	return jobs
+	for i:=0; i<searchCards.Length(); i++ {
+		jobs = append(jobs, <- c)
+	}	
+	mainC <- jobs
 }
 
-func extractJob(card *goquery.Selection) extractedJob {
+func extractJob(card *goquery.Selection, c chan<- extractedJob) {
 	id, _ := card.Attr("data-jk")
 	title := cleanString(card.Find(".jobTitle>span").Text())
 	location := cleanString(card.Find(".companyLocation").Text())
 	salary := cleanString(card.Find(".salary-snippet>span").Text())
 	desc := cleanString(card.Find(".job-snippet").Text())
-	return extractedJob{
+	c <- extractedJob{
 		id: id,
 		title: title,
 		location: location,
